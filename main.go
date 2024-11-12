@@ -42,7 +42,7 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 
 	fmt.Printf("Received: %s\n", buffer)
 
-	file, err := os.OpenFile(`C:\Users\gfanha\Downloads\Escala-Controle-Julho (11).xls`, os.O_RDONLY, 0755)
+	file, err := os.OpenFile(`C:\Users\gfanha\Downloads\excelPlantonistas.xlsx`, os.O_RDONLY, 0755)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 		}
 
 		responseBuffer := MetaData{
-			Name:     "",
+			Name:     fi.Name(),
 			FileSize: fi.Size(),
 			Reps:     int32(quantidadeDeReps - i),
 			Data:     dataBuffer,
