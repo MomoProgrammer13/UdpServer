@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 const (
@@ -42,7 +43,7 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 
 	fmt.Printf("Received: %s\n", buffer)
 
-	file, err := os.OpenFile(`C:\Users\gfanha\Downloads\excelPlantonistas.xlsx`, os.O_RDONLY, 0755)
+	file, err := os.OpenFile(`C:\Users\gabri\Downloads\Aeries Steele.torrent`, os.O_RDONLY, 0755)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -139,6 +140,14 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 	//file.Close()
 }
 
+func handleHelloRequest(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte) {
+	println("Received a request: " + addr.String())
+	conn.WriteToUDP([]byte("Hello from server"), addr)
+
+	time.Sleep(1 * time.Second)
+	conn.WriteToUDP([]byte("Hello Again \n"), addr)
+}
+
 func main() {
 	addr := net.UDPAddr{
 		Port: PORT,
@@ -158,6 +167,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handleIncomingRequests(listen, clientAddr, buffer)
+		go handleHelloRequest(listen, clientAddr, buffer)
+		//go handleIncomingRequests(listen, clientAddr, buffer)
 	}
 }
