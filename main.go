@@ -42,8 +42,7 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 	//var reps uint32
 
 	fmt.Printf("Received: %s\n", buffer)
-
-	file, err := os.OpenFile(`C:\Users\gabri\Downloads\Aeries Steele.torrent`, os.O_RDONLY, 0755)
+	file, err := os.OpenFile(`LICENSE`, os.O_RDONLY, 0755)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -80,16 +79,24 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 
 	quantidadeDeReps := fi.Size() / bodySize
 
+	_, err = conn.WriteToUDP([]byte("Parts: "+fmt.Sprint(quantidadeDeReps)), addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	time.Sleep(1 * time.Second)
+
 	for i := int64(0); i <= quantidadeDeReps; i++ {
 
 		var dataBuffer []byte
 		fmt.Printf("Reps: %d\n", quantidadeDeReps-i)
 		fmt.Printf("Body Size: %v", i*bodySize)
 		if size := fi.Size() - i*bodySize; size < bodySize {
-			dataBuffer = fileBuffer[i*bodySize : i*bodySize]
+			dataBuffer = fileBuffer[i*bodySize : fi.Size()]
+			fmt.Printf(" Body Size: %v", len(dataBuffer))
 		} else {
 			dataBuffer = fileBuffer[i*bodySize : i*bodySize+bodySize]
-			fmt.Printf("Body Size: %v", len(dataBuffer))
+			fmt.Printf(" Body Size: %v", len(dataBuffer))
 		}
 
 		responseBuffer := MetaData{
@@ -161,13 +168,14 @@ func main() {
 
 	println("Server has started on PORT " + fmt.Sprint(PORT))
 
-	for {
+	for i := 0; ; i++ {
+		fmt.Println("Valor de i: ", i)
 		buffer := make([]byte, 1024)
 		_, clientAddr, err := listen.ReadFromUDP(buffer)
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handleHelloRequest(listen, clientAddr, buffer)
-		//go handleIncomingRequests(listen, clientAddr, buffer)
+		//go handleHelloRequest(listen, clientAddr, buffer)
+		go handleIncomingRequests(listen, clientAddr, buffer)
 	}
 }
