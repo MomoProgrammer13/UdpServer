@@ -4,28 +4,41 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"hash/crc32"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
-	HOST = "127.0.0.1"
-	PORT = 9001
-	TYPE = "udp"
+	HOST       = "127.0.0.1"
+	PORT       = 9001
+	TYPE       = "udp"
+	BUFFERSIZE = 2048
 )
+
+var FILES = map[string]string{
+	"CR7":       "CR7.jpg",
+	"DOC":       "Exemplo_Entrega_30_10.docx",
+	"PDF":       "Matriz_981_2024.pdf",
+	"ORDENACAO": "ordenacao.txt",
+	"UTFPR":     "UTFPR campus Curitiba.mp4",
+	"UFPR":      "Conheça a UFPR.mp4",
+}
 
 type ResponseMetaData struct {
 	Name     string
 	FileSize int64
 	Reps     uint32
-	Data     []byte
+	Msg      string
 }
 
 type Packet struct {
-	Reps uint32
-	Data []byte
+	Reps     uint32
+	Checksum uint32
+	Data     []byte
 }
 
 type RequestMetaData struct {
@@ -68,10 +81,11 @@ func (meta Packet) PacketToBytes() []byte {
 	return metaBytes.Bytes()
 }
 
-func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte) {
-	println("Received a request: " + addr.String())
+func calculateChecksum(data []byte) uint32 {
+	return crc32.ChecksumIEEE(data)
+}
 
-	fmt.Printf("Received: %s\n", buffer)
+func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte) {
 	dec := gob.NewDecoder(bytes.NewReader(buffer))
 	var request RequestMetaData
 	// TODO - Check if the header is valid
@@ -80,38 +94,66 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 		log.Fatal(errorDecode)
 	}
 	// TODO - Check if the file exist
-	file, err := os.OpenFile(request.Name, os.O_RDONLY, 0755)
+	filename := FILES[strings.ToUpper(strings.ReplaceAll(request.Name, " ", ""))]
+	if filename == "" {
+		errorInformation := ResponseMetaData{
+			Name: "__ERROR__",
+			Msg:  "File not found",
+		}.ResponseMetaDataToBytes()
+		_, err := conn.WriteToUDP(errorInformation, addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	file, err := os.OpenFile(fmt.Sprintf("Files/%s", filename), os.O_RDONLY, 0755)
 	if err != nil {
-		log.Fatal(err)
+		errorInformation := ResponseMetaData{
+			Name: "__ERROR__",
+			Msg:  "File not found",
+		}.ResponseMetaDataToBytes()
+		_, err = conn.WriteToUDP(errorInformation, addr)
+		return
 	}
 	defer file.Close()
 
 	fi, err := file.Stat()
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("File Size: %d\n", fi.Size())
-	fileBuffer := make([]byte, fi.Size())
-	_, errorBuffer := file.Read(fileBuffer)
-	if errorBuffer != nil {
+		errorInformation := ResponseMetaData{
+			Name: "__ERROR__",
+			Msg:  "Failed to get file information",
+		}.ResponseMetaDataToBytes()
+		_, err = conn.WriteToUDP(errorInformation, addr)
 		return
 	}
-	headerSize := 64
-	bodySize := int64(1024 - headerSize)
-	fmt.Printf("Header Size: %d\n", headerSize)
-	fmt.Printf("Body Size: %d\n", bodySize)
+
+	headerSize := 128
+	bodySize := int64(BUFFERSIZE - headerSize)
 	quantidadeDeReps := fi.Size() / bodySize
 
 	if request.Miss {
-
+		missingPacket := request.Reps
+		fmt.Println("Reenviando pacote", missingPacket)
+		fileBuffer := make([]byte, bodySize)
+		_, errorBuffer := file.ReadAt(fileBuffer, int64(missingPacket)*bodySize)
+		if errorBuffer != nil {
+			conn.WriteToUDP([]byte("Error"), addr)
+			return
+		}
+		packetBuffer := Packet{
+			Reps:     uint32(missingPacket),
+			Checksum: calculateChecksum(fileBuffer),
+			Data:     fileBuffer,
+		}.PacketToBytes()
+		conn.WriteToUDP(packetBuffer, addr)
 	} else {
 		if request.Reps == 0 {
+			fmt.Printf("Sending %s to %s\n", filename, addr.String())
 			fileInformation := ResponseMetaData{
 				Name:     fi.Name(),
 				FileSize: fi.Size(),
 				Reps:     uint32(quantidadeDeReps),
-				Data:     []byte(""),
 			}.ResponseMetaDataToBytes()
 			_, err = conn.WriteToUDP(fileInformation, addr)
 			if err != nil {
@@ -130,37 +172,51 @@ func handleIncomingRequests(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte)
 				}
 				return 9
 			}
-			if uint32(quantidadeDeReps)/(request.Reps) > 0 {
+			if uint32(quantidadeDeReps) > request.Reps+10 {
 				return 9
 			}
 			return quantidadeDeReps % int64(request.Reps)
 		}
-		for i := int64(request.Reps); i <= quantidadeEnvio(); i++ {
+
+		fileBytesToSend := func() (int64, int64) {
+			if request.Reps == 0 {
+				if fi.Size() < bodySize*10 {
+					return fi.Size(), 0
+				}
+				return bodySize * 10, 0
+			} else if size := fi.Size() - int64(request.Reps)*bodySize; size < bodySize {
+				return bodySize * 10, bodySize * int64(request.Reps)
+			}
+			return fi.Size() - int64(request.Reps)*bodySize, bodySize * int64(request.Reps)
+		}
+
+		a, b := fileBytesToSend()
+
+		fileBuffer := make([]byte, a)
+		_, errorBuffer := file.ReadAt(fileBuffer, b)
+		if errorBuffer != nil {
+			return
+		}
+		tam := quantidadeEnvio()
+		for i := int64(0); i <= tam; i++ {
 			var dataBuffer []byte
-			fmt.Printf("Reps: %d", quantidadeDeReps-i)
-			fmt.Printf(" Size sended: %v", i*bodySize)
-			if size := fi.Size() - i*bodySize; size < bodySize {
-				dataBuffer = fileBuffer[i*bodySize : fi.Size()]
-				fmt.Printf(" Body Size: %v\n", len(dataBuffer))
+			//if i == 0 {
+			//	continue
+			//}
+			if size := a - i*bodySize; size < bodySize {
+				fmt.Printf("Finish sending %s to %s\n", filename, addr.String())
+				dataBuffer = fileBuffer[i*bodySize : a]
 			} else {
 				dataBuffer = fileBuffer[i*bodySize : i*bodySize+bodySize]
-				fmt.Printf(" Body Size: %v\n", len(dataBuffer))
 			}
 			packetBuffer := Packet{
-				Reps: uint32(quantidadeDeReps - i),
-				Data: dataBuffer,
+				Reps:     uint32(request.Reps + uint32(i)),
+				Checksum: calculateChecksum(dataBuffer),
+				Data:     dataBuffer,
 			}.PacketToBytes()
 			conn.WriteToUDP(packetBuffer, addr)
 		}
 	}
-}
-
-func handleHelloRequest(conn *net.UDPConn, addr *net.UDPAddr, buffer []byte) {
-	println("Received a request: " + addr.String())
-	conn.WriteToUDP([]byte("Hello from server"), addr)
-
-	time.Sleep(1 * time.Second)
-	conn.WriteToUDP([]byte("Hello Again \n"), addr)
 }
 
 func main() {
@@ -177,8 +233,7 @@ func main() {
 	println("Server has started on PORT " + fmt.Sprint(PORT))
 
 	for i := 0; ; i++ {
-		fmt.Println("Valor de i: ", i)
-		buffer := make([]byte, 1024)
+		buffer := make([]byte, BUFFERSIZE)
 		_, clientAddr, err := listen.ReadFromUDP(buffer)
 		if err != nil {
 			log.Fatal(err)
